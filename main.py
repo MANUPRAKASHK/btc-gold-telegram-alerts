@@ -14,26 +14,13 @@ if not TOKEN:
 
 BASE = f"https://api.telegram.org/bot{TOKEN}"
 
-# Find the Telegram chat that started the bot
-updates = requests.get(
-    f"{BASE}/getUpdates", timeout=20
-).json()
+# Get Telegram Chat ID from GitHub Secrets
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-if not updates.get("ok"):
-    raise RuntimeError("Could not retrieve Telegram updates")
+if not CHAT_ID:
+    raise ValueError("TELEGRAM_CHAT_ID secret is missing")
 
-chat_id = None
-
-for update in reversed(updates.get("result", [])):
-    msg = update.get("message") or update.get("edited_message")
-    if msg and msg.get("chat"):
-        chat_id = msg["chat"]["id"]
-        break
-
-if not chat_id:
-    raise RuntimeError(
-        "No Telegram chat found. Open your bot, send /start, and retry."
-    )
+chat_id = int(CHAT_ID)
 
 def get_market_data(symbol, name):
     df = yf.Ticker(symbol).history(
