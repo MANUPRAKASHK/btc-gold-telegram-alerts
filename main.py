@@ -66,7 +66,7 @@ def get_market_data(symbol, name):
     )
 
 btc = get_market_data("BTC-USD", "BITCOIN (BTC/USD)")
-gold = get_market_data("XAUUSD=X", "INTERNATIONAL GOLD (XAU/USD)")
+gold = get_market_data("GC=F", "COMEX GOLD FUTURES (USD/oz)")
 
 now = datetime.now(ZoneInfo("Asia/Kolkata"))
 
