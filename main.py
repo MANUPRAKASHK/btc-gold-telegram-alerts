@@ -89,7 +89,17 @@ response = requests.post(
     timeout=20
 )
 
-response.raise_for_status()
+
+if not response.ok:
+    try:
+        error_details = response.json()
+    except ValueError:
+        error_details = response.text
+
+    raise RuntimeError(
+        f"Telegram API error {response.status_code}: {error_details}"
+    )
+
 
 if not response.json().get("ok"):
     raise RuntimeError("Telegram message delivery failed")
