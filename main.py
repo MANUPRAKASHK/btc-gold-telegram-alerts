@@ -1,27 +1,50 @@
 
 import os
+import json
 import requests
 import yfinance as yf
 import pandas as pd
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+# --------------------------------------------------
+# TELEGRAM SETTINGS
+# --------------------------------------------------
+
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN secret is missing")
-
-BASE = f"https://api.telegram.org/bot{TOKEN}"
-
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 if not CHAT_ID:
     raise ValueError("TELEGRAM_CHAT_ID secret is missing")
 
 chat_id = int(CHAT_ID)
 
+BASE = f"https://api.telegram.org/bot{TOKEN}"
+
+
+# --------------------------------------------------
+# ALERT STATE - PREVENT DUPLICATE ALERTS
+# --------------------------------------------------
+
+STATE_FILE = "alert_state.json"
+
+try:
+    with open(STATE_FILE, "r") as f:
+        alert_state = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    alert_state = {}
+
+
+# --------------------------------------------------
+# TELEGRAM MESSAGE FUNCTION
+# --------------------------------------------------
 
 def send_telegram(message):
+
     response = requests.post(
         f"{BASE}/sendMessage",
         json={
@@ -43,143 +66,260 @@ def send_telegram(message):
         )
 
     if not response.json().get("ok"):
-        raise RuntimeError("Telegram message delivery failed")
+        raise RuntimeError("Telegram delivery failed")
 
+
+# --------------------------------------------------
+# MARKET DATA AND INDICATORS
+# --------------------------------------------------
 
 def get_market_data(symbol, name):
 
     df = yf.Ticker(symbol).history(
         period="10d",
-        interval="1h"
+        interval="1h",
+        auto_adjust=False
     )
 
     if df.empty:
         raise RuntimeError(f"No hourly data for {name}")
 
-    # Use completed hourly candles only
-    idx = pd.DatetimeIndex(df.index)
+    df = df[["Open", "High", "Low", "Close"]].dropna()
 
-    if idx.tz is None:
+    # Yahoo hourly timestamps represent candle start times.
+    # Exclude candles that have not completed yet.
+
+    if df.index.tz is None:
         raise RuntimeError(
-            f"Hourly timestamps have no timezone for {name}"
+            f"Hourly data timezone missing for {name}"
         )
 
+    utc_index = df.index.tz_convert("UTC")
+
+    cutoff = (
+        pd.Timestamp.now(tz="UTC")
+        - pd.Timedelta(seconds=60)
+    )
+
     completed = (
-        idx.tz_convert("UTC") + pd.Timedelta(hours=1)
-    ) <= pd.Timestamp.now(tz="UTC")
+        utc_index + pd.Timedelta(hours=1)
+    ) <= cutoff
 
     df = df.loc[completed].copy()
 
     if len(df) < 50:
         raise RuntimeError(
-            f"Insufficient completed hourly data for {name}"
+            f"Insufficient completed hourly candles for {name}"
         )
 
-    close = df["Close"].dropna()
-    high = df["High"].reindex(close.index)
-    low = df["Low"].reindex(close.index)
+    # --------------------------------------------------
+    # PRICE SERIES
+    # --------------------------------------------------
 
-    # Indicators
+    open_price = df["Open"]
+    high_price = df["High"]
+    low_price = df["Low"]
+    close = df["Close"]
+
+    # --------------------------------------------------
+    # EMA 9 AND EMA 20
+    # --------------------------------------------------
+
+    ema9 = close.ewm(
+        span=9,
+        adjust=False
+    ).mean()
+
+    ema20 = close.ewm(
+        span=20,
+        adjust=False
+    ).mean()
+
+    # --------------------------------------------------
+    # RSI 14
+    # --------------------------------------------------
+
     delta = close.diff()
 
     gain = delta.clip(lower=0).ewm(
-        alpha=1/14, adjust=False
+        alpha=1/14,
+        adjust=False
     ).mean()
 
     loss = (-delta.clip(upper=0)).ewm(
-        alpha=1/14, adjust=False
+        alpha=1/14,
+        adjust=False
     ).mean()
 
     rs = gain / loss.replace(0, float("nan"))
+
     rsi = 100 - (100 / (1 + rs))
 
-    ema20 = close.ewm(
-        span=20, adjust=False
-    ).mean()
+    rsi = rsi.mask((loss == 0) & (gain > 0), 100)
+    rsi = rsi.mask((gain == 0) & (loss > 0), 0)
 
-    ema50 = close.ewm(
-        span=50, adjust=False
-    ).mean()
+    # --------------------------------------------------
+    # CURRENT CANDLE INFORMATION
+    # --------------------------------------------------
 
-    macd = (
-        close.ewm(span=12, adjust=False).mean()
-        - close.ewm(span=26, adjust=False).mean()
+    last_open = open_price.iloc[-1]
+    last_close = close.iloc[-1]
+
+    candle_change = (
+        (last_close - last_open) / last_open
+    ) * 100
+
+    if candle_change > 0:
+        candle_text = f"🟢 +{candle_change:.2f}%"
+    elif candle_change < 0:
+        candle_text = f"🔴 {candle_change:.2f}%"
+    else:
+        candle_text = "⚪ 0.00%"
+
+    last_time = df.index[-1].tz_convert(
+        ZoneInfo("Asia/Kolkata")
     )
 
-    signal = macd.ewm(
-        span=9, adjust=False
-    ).mean()
-
-    trend = (
-        "Bullish"
-        if ema20.iloc[-1] > ema50.iloc[-1]
-        else "Bearish"
-    )
+    # --------------------------------------------------
+    # HOURLY REPORT
+    # --------------------------------------------------
 
     report = (
         f"*{name}*\n"
-        f"Price: {close.iloc[-1]:,.2f}\n"
+        f"Hourly Close: {last_close:,.2f}\n"
+        f"Candle Change: {candle_text}\n"
         f"RSI (14): {rsi.iloc[-1]:.2f}\n"
         f"EMA 20: {ema20.iloc[-1]:,.2f}\n"
-        f"EMA 50: {ema50.iloc[-1]:,.2f}\n"
-        f"MACD: {macd.iloc[-1]:.4f}\n"
-        f"Signal: {signal.iloc[-1]:.4f}\n"
-        f"Trend: {trend}\n"
+        f"Candle Time: {last_time:%H:%M} IST\n"
     )
 
-    # Four price-action conditions
+    # --------------------------------------------------
+    # PRICE ACTION CONDITIONS
+    # --------------------------------------------------
+
     conditions = {
-        "BULLISH MOMENTUM": (
-            close > close.shift(1),
-            "Bullish: Current hourly close is above previous hourly close.",
-            close.iloc[-2]
-        ),
 
-        "BULLISH BREAKOUT": (
-            close > high.shift(1),
-            "Bullish breakout: Current hourly close is above previous hourly high.",
-            high.iloc[-2]
-        ),
+        "BULLISH - CLOSE ABOVE PREVIOUS OPEN":
+            close > open_price.shift(1),
 
-        "BEARISH MOMENTUM": (
-            close < close.shift(1),
-            "Bearish: Current hourly close is below previous hourly close.",
-            close.iloc[-2]
-        ),
+        "BULLISH - CLOSE ABOVE PREVIOUS HIGH":
+            close > high_price.shift(1),
 
-        "BEARISH BREAKDOWN": (
-            close < low.shift(1),
-            "Bearish breakdown: Current hourly close is below previous hourly low.",
-            low.iloc[-2]
-        )
+        "BEARISH - CLOSE BELOW PREVIOUS OPEN":
+            close < open_price.shift(1),
+
+        "BEARISH - CLOSE BELOW PREVIOUS LOW":
+            close < low_price.shift(1)
     }
+
+    # --------------------------------------------------
+    # BULLISH AND BEARISH ENGULFING
+    # --------------------------------------------------
+
+    previous_red = (
+        close.shift(1) < open_price.shift(1)
+    )
+
+    previous_green = (
+        close.shift(1) > open_price.shift(1)
+    )
+
+    current_green = close > open_price
+    current_red = close < open_price
+
+    bullish_engulfing = (
+        previous_red
+        & current_green
+        & (open_price <= close.shift(1))
+        & (close >= open_price.shift(1))
+    )
+
+    bearish_engulfing = (
+        previous_green
+        & current_red
+        & (open_price >= close.shift(1))
+        & (close <= open_price.shift(1))
+    )
+
+    conditions["BULLISH ENGULFING"] = bullish_engulfing
+    conditions["BEARISH ENGULFING"] = bearish_engulfing
+
+    # --------------------------------------------------
+    # EMA 9 TOUCH + EMA 20 POSITION
+    # --------------------------------------------------
+
+    # Actual candle range must touch or cross EMA 9.
+    # EMA 9 value will not be displayed in Telegram.
+
+    touches_ema9 = (
+        (low_price <= ema9)
+        & (high_price >= ema9)
+    )
+
+    bullish_ema_setup = (
+        current_green
+        & (close < ema20)
+        & touches_ema9
+    )
+
+    bearish_ema_setup = (
+        current_red
+        & (close > ema20)
+        & touches_ema9
+    )
+
+    conditions[
+        "BULLISH - GREEN CANDLE BELOW EMA 20 TOUCHING EMA 9"
+    ] = bullish_ema_setup
+
+    conditions[
+        "BEARISH - RED CANDLE ABOVE EMA 20 TOUCHING EMA 9"
+    ] = bearish_ema_setup
+
+    # --------------------------------------------------
+    # NEW CANDLE CHECK
+    # --------------------------------------------------
+
+    candle_id = df.index[-1].isoformat()
+
+    previous_candle_id = alert_state.get(symbol)
 
     alerts = []
 
-    for title, (condition, description, reference) in conditions.items():
+    # Process alerts only once for each completed candle.
 
-        # Alert only when condition changes from FALSE to TRUE
-        current_signal = bool(condition.iloc[-1])
-        previous_signal = bool(condition.iloc[-2])
+    if candle_id != previous_candle_id:
 
-        if current_signal and not previous_signal:
+        for title, condition in conditions.items():
 
-            direction = (
-                "🟢" if "BULLISH" in title else "🔴"
-            )
+            if bool(condition.iloc[-1]):
 
-            alerts.append(
-                f"{direction} *{name}*\n"
-                f"*{title}*\n\n"
-                f"{description}\n"
-                f"Previous reference: {reference:,.2f}\n"
-                f"Current hourly close: {close.iloc[-1]:,.2f}"
-            )
+                if "BULLISH" in title:
+                    emoji = "🟢"
+                else:
+                    emoji = "🔴"
+
+                alerts.append(
+                    f"🚨 *NEW HOURLY SIGNAL*\n\n"
+                    f"{emoji} *{name}*\n"
+                    f"*{title}*\n\n"
+                    f"Hourly Close: {last_close:,.2f}\n"
+                    f"Candle Change: {candle_text}\n"
+                    f"RSI (14): {rsi.iloc[-1]:.2f}\n"
+                    f"EMA 20: {ema20.iloc[-1]:,.2f}\n"
+                    f"Candle Time: {last_time:%H:%M} IST"
+                )
+
+        # Record candle even if no signal occurred.
+        alert_state[symbol] = candle_id
 
     return report, alerts
 
 
-# Fetch BTC and Gold data
+# --------------------------------------------------
+# FETCH BTC AND GOLD
+# --------------------------------------------------
+
 btc, btc_alerts = get_market_data(
     "BTC-USD",
     "BITCOIN (BTC/USD)"
@@ -190,11 +330,15 @@ gold, gold_alerts = get_market_data(
     "COMEX GOLD FUTURES (USD/oz)"
 )
 
+
+# --------------------------------------------------
+# SEND REGULAR HOURLY REPORT
+# --------------------------------------------------
+
 now = datetime.now(ZoneInfo("Asia/Kolkata"))
 
-# Existing hourly report
 report = (
-    "📊 *HOURLY MARKET ALERT*\n"
+    "📊 *HOURLY MARKET REPORT*\n"
     f"Date: {now:%d-%m-%Y}\n"
     f"Time: {now:%H:%M} IST\n\n"
     f"{btc}\n"
@@ -206,16 +350,28 @@ send_telegram(report)
 
 print("Hourly market report sent successfully.")
 
-# Send each new price-action signal separately
+
+# --------------------------------------------------
+# SEND SEPARATE SIGNAL ALERTS
+# --------------------------------------------------
+
 all_alerts = btc_alerts + gold_alerts
 
 for alert in all_alerts:
-    send_telegram(
-        "🚨 *NEW HOURLY PRICE ACTION SIGNAL*\n\n"
-        + alert
-    )
-    print("Price-action alert sent:", alert.splitlines()[1])
+
+    send_telegram(alert)
+
+    print("New signal sent successfully.")
 
 if not all_alerts:
     print("No new price-action signals.")
 
+
+# --------------------------------------------------
+# SAVE ALERT STATE
+# --------------------------------------------------
+
+with open(STATE_FILE, "w") as f:
+    json.dump(alert_state, f, indent=4)
+
+print("Alert state saved successfully.")
