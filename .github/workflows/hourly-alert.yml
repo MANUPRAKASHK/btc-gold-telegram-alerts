@@ -5,7 +5,9 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '2 * * * *'
-
+concurrency:
+  group: btc-gold-market-alerts
+  cancel-in-progress: true
 jobs:
   market-alerts:
     runs-on: ubuntu-latest
