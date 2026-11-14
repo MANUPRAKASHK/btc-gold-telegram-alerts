@@ -288,27 +288,34 @@ def get_market_data(symbol, name):
 
     # Process alerts only once for each completed candle.
 
-    if candle_id != previous_candle_id:
+if candle_id != previous_candle_id:
 
-        for title, condition in conditions.items():
+    triggered = []
 
-            if bool(condition.iloc[-1]):
+    for title, condition in conditions.items():
 
-                if "BULLISH" in title:
-                    emoji = "🟢"
-                else:
-                    emoji = "🔴"
+        if bool(condition.iloc[-1]):
 
-                alerts.append(
-                    f"🚨 *NEW HOURLY SIGNAL*\n\n"
-                    f"{emoji} *{name}*\n"
-                    f"*{title}*\n\n"
-                    f"Hourly Close: {last_close:,.2f}\n"
-                    f"Candle Change: {candle_text}\n"
-                    f"RSI (14): {rsi.iloc[-1]:.2f}\n"
-                    f"EMA 20: {ema20.iloc[-1]:,.2f}\n"
-                    f"Candle Time: {last_time:%H:%M} IST"
-                )
+            emoji = (
+                "🟢" if "BULLISH" in title else "🔴"
+            )
+
+            triggered.append(f"{emoji} {title}")
+
+    if triggered:
+
+        alerts.append(
+            "🚨 *NEW HOURLY SIGNALS*\n\n"
+            f"*{name}*\n\n"
+            + "\n".join(triggered)
+            + f"\n\nHourly Close: {last_close:,.2f}"
+            + f"\nCandle Change: {candle_text}"
+            + f"\nRSI (14): {rsi.iloc[-1]:.2f}"
+            + f"\nEMA 20: {ema20.iloc[-1]:,.2f}"
+            + f"\nCandle Time: {last_time:%H:%M} IST"
+        )
+
+    alert_state[symbol] = candle_id
 
         # Record candle even if no signal occurred.
         alert_state[symbol] = candle_id
