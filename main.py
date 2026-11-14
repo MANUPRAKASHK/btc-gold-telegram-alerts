@@ -276,6 +276,7 @@ def get_market_data(symbol, name):
         "BEARISH - RED CANDLE ABOVE EMA 20 TOUCHING EMA 9"
     ] = bearish_ema_setup
 
+
     # --------------------------------------------------
     # NEW CANDLE CHECK
     # --------------------------------------------------
@@ -286,41 +287,37 @@ def get_market_data(symbol, name):
 
     alerts = []
 
-    # Process alerts only once for each completed candle.
+    if candle_id != previous_candle_id:
 
-if candle_id != previous_candle_id:
+        triggered = []
 
-    triggered = []
+        for title, condition in conditions.items():
 
-    for title, condition in conditions.items():
+            if bool(condition.iloc[-1]):
 
-        if bool(condition.iloc[-1]):
+                emoji = (
+                    "🟢" if "BULLISH" in title else "🔴"
+                )
 
-            emoji = (
-                "🟢" if "BULLISH" in title else "🔴"
+                triggered.append(f"{emoji} {title}")
+
+        if triggered:
+
+            alerts.append(
+                "🚨 *NEW HOURLY SIGNALS*\n\n"
+                f"*{name}*\n\n"
+                + "\n".join(triggered)
+                + f"\n\nHourly Close: {last_close:,.2f}"
+                + f"\nCandle Change: {candle_text}"
+                + f"\nRSI (14): {rsi.iloc[-1]:.2f}"
+                + f"\nEMA 20: {ema20.iloc[-1]:,.2f}"
+                + f"\nCandle Time: {last_time:%H:%M} IST"
             )
 
-            triggered.append(f"{emoji} {title}")
-
-    if triggered:
-
-        alerts.append(
-            "🚨 *NEW HOURLY SIGNALS*\n\n"
-            f"*{name}*\n\n"
-            + "\n".join(triggered)
-            + f"\n\nHourly Close: {last_close:,.2f}"
-            + f"\nCandle Change: {candle_text}"
-            + f"\nRSI (14): {rsi.iloc[-1]:.2f}"
-            + f"\nEMA 20: {ema20.iloc[-1]:,.2f}"
-            + f"\nCandle Time: {last_time:%H:%M} IST"
-        )
-
-    alert_state[symbol] = candle_id
-
-        # Record candle even if no signal occurred.
         alert_state[symbol] = candle_id
 
     return report, alerts
+
 
 
 # --------------------------------------------------
