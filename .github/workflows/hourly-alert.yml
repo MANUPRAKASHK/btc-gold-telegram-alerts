@@ -4,31 +4,25 @@ name: BTC and Gold Hourly Telegram Alerts
 on:
   workflow_dispatch:
   schedule:
-    - cron: '1 * * * *'
+    - cron: '2 * * * *'
 
-permissions:
-  contents: read
-
-jobs: of
+jobs:
   market-alerts:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install libraries
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install requests yfinance pandas
 
-      
       - name: Restore previous alert state
         uses: actions/cache@v4
         with:
@@ -42,4 +36,3 @@ jobs: of
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
-
