@@ -180,37 +180,44 @@ def get_market_data(symbol, name):
         ZoneInfo("Asia/Kolkata")
     )
 
-    # --------------------------------------------------
-    # HOURLY REPORT
-    # --------------------------------------------------
-
-    report = (
-        f"*{name}*\n"
-        f"Hourly Close: {last_close:,.2f}\n"
-        f"Candle Change: {candle_text}\n"
-        f"RSI (14): {rsi.iloc[-1]:.2f}\n"
-        f"EMA 20: {ema20.iloc[-1]:,.2f}\n"
-        f"Candle Time: {last_time:%H:%M} IST\n"
+    # Display candle CLOSING time, not opening time.
+    candle_close_time = (
+        last_time + pd.Timedelta(hours=1)
     )
 
     # --------------------------------------------------
     # PRICE ACTION CONDITIONS
     # --------------------------------------------------
 
-    conditions = {
+    price_action_conditions = {
 
-        "BULLISH - CLOSE ABOVE PREVIOUS OPEN":
+        "CLOSE ABOVE PREVIOUS OPEN":
             close > open_price.shift(1),
 
-        "BULLISH - CLOSE ABOVE PREVIOUS HIGH":
+        "CLOSE ABOVE PREVIOUS HIGH":
             close > high_price.shift(1),
 
-        "BEARISH - CLOSE BELOW PREVIOUS OPEN":
+        "CLOSE BELOW PREVIOUS OPEN":
             close < open_price.shift(1),
 
-        "BEARISH - CLOSE BELOW PREVIOUS LOW":
+        "CLOSE BELOW PREVIOUS LOW":
             close < low_price.shift(1)
     }
+
+    # Convert the four conditions into YES / NO text.
+
+    price_action_text = "\n".join(
+        f"{'🟢' if bool(condition.iloc[-1]) else '🔴'} "
+        f"{title}: "
+        f"{'YES' if bool(condition.iloc[-1]) else 'NO'}"
+        for title, condition in price_action_conditions.items()
+    )
+
+    # --------------------------------------------------
+    # ALL SIGNAL CONDITIONS
+    # --------------------------------------------------
+
+    conditions = dict(price_action_conditions)
 
     # --------------------------------------------------
     # BULLISH AND BEARISH ENGULFING
@@ -276,9 +283,24 @@ def get_market_data(symbol, name):
         "BEARISH - RED CANDLE ABOVE EMA 20 TOUCHING EMA 9"
     ] = bearish_ema_setup
 
+    # --------------------------------------------------
+    # HOURLY REPORT
+    # --------------------------------------------------
+
+    report = (
+        f"*{name}*\n"
+        f"Hourly Close: {last_close:,.2f}\n"
+        f"Candle Change: {candle_text}\n"
+        f"RSI (14): {rsi.iloc[-1]:.2f}\n"
+        f"EMA 20: {ema20.iloc[-1]:,.2f}\n\n"
+        f"*PRICE ACTION*\n"
+        f"{price_action_text}\n\n"
+        f"Candle Close Time: "
+        f"{candle_close_time:%H:%M} IST\n"
+    )
 
     # --------------------------------------------------
-    # NEW CANDLE CHECK
+    # NEW CANDLE CHECK - PREVENT DUPLICATE SIGNALS
     # --------------------------------------------------
 
     candle_id = df.index[-1].isoformat()
@@ -311,13 +333,13 @@ def get_market_data(symbol, name):
                 + f"\nCandle Change: {candle_text}"
                 + f"\nRSI (14): {rsi.iloc[-1]:.2f}"
                 + f"\nEMA 20: {ema20.iloc[-1]:,.2f}"
-                + f"\nCandle Time: {last_time:%H:%M} IST"
+                + f"\nCandle Close Time: "
+                f"{candle_close_time:%H:%M} IST"
             )
 
         alert_state[symbol] = candle_id
 
     return report, alerts
-
 
 
 # --------------------------------------------------
@@ -356,7 +378,7 @@ print("Hourly market report sent successfully.")
 
 
 # --------------------------------------------------
-# SEND SEPARATE SIGNAL ALERTS
+# SEND CONSOLIDATED SIGNAL ALERTS
 # --------------------------------------------------
 
 all_alerts = btc_alerts + gold_alerts
