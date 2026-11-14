@@ -4,12 +4,12 @@ name: BTC and Gold Hourly Telegram Alerts
 on:
   workflow_dispatch:
   schedule:
-    - cron: '7 * * * *'
+    - cron: '1 * * * *'
 
 permissions:
   contents: read
 
-jobs:
+jobs: of
   market-alerts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
